@@ -2,7 +2,7 @@
     <string name="app_name">Bluetooth Joystick Controller</string>
 
     <string name="refresh">Refresh</string>
-    <string name="center_lock">Lock Center</string>
+    <string name="center_lock">Recenter</string>
     <string name="deadzone">Deadzone</string>
     <string name="deadzone_default_val">50</string>
 </resources>

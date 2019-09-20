@@ -37,24 +37,22 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.IOException;
 import java.io.OutputStream;
 import java.util.UUID;
 
 import io.github.controlwear.virtual.joystick.android.JoystickView;
 
 public class ControllerActivity extends AppCompatActivity {
+    private static final String TAG = "ControllerActivity";
     private static final int INTERVAL = 500;
-    private static final int MIN_SPEED = 70;
-    private static final int MAX_SPEED = 255;
 
+    private CommandSender sender;
     private BluetoothAdapter bt;
     private InputMethodManager imm;
     private Spinner btDeviceSpinner;
     private BluetoothSocket btSocket;
     private BluetoothDevice btDevice;
     private BluetoothDevice[] btDevices;
-    private OutputStream btOutput;
     private int deadzone;
     private boolean centerLock;
 
@@ -64,6 +62,7 @@ public class ControllerActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_fullscreen);
 
+        sender = new CommandSender();
         bt = BluetoothAdapter.getDefaultAdapter();
         imm = (InputMethodManager)getSystemService(Activity.INPUT_METHOD_SERVICE);
         btDeviceSpinner = findViewById(R.id.device_select);
@@ -79,6 +78,8 @@ public class ControllerActivity extends AppCompatActivity {
 
         centerLock = true;
         deadzone = 50;
+
+        sender.setDeadzone(deadzone);
 
         deadzoneField.setText(String.valueOf(deadzone));
         centerLockBox.setChecked(true);
@@ -100,6 +101,8 @@ public class ControllerActivity extends AppCompatActivity {
                     }
 
                     deadzone = Integer.parseInt(text);
+
+                    sender.setDeadzone(deadzone);
 
                     imm.hideSoftInputFromWindow(textView.getWindowToken(), 0);
 
@@ -123,9 +126,14 @@ public class ControllerActivity extends AppCompatActivity {
         btDeviceSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> adapterView, View view, int i, long l) {
-                btDevice = btDevices[i];
+                if (i == 0)
+                    return;
 
-                connectRfcomm();
+                btDevice = btDevices[i - 1];
+
+                Log.d("BLUETOOTH", "connecting to bt");
+
+                connectRfcommNonBlocking();
             }
 
             @Override
@@ -143,7 +151,8 @@ public class ControllerActivity extends AppCompatActivity {
             @Override
             public void onMove(int angle, int strength) {
                 if (checkDevice())
-                    sendJoyStick(angle, strength, CommandParts.MOTOR_LEFT);
+                    sender.sendInput(CommandSender.Motor.LEFT, strength, angle);
+                    //sendJoyStick(angle, strength, CommandParts.MOTOR_LEFT);
             }
         }, INTERVAL);
 
@@ -151,37 +160,19 @@ public class ControllerActivity extends AppCompatActivity {
             @Override
             public void onMove(int angle, int strength) {
                 if (checkDevice())
-                    sendJoyStick(angle, strength, CommandParts.MOTOR_RIGHT);
+                    sender.sendInput(CommandSender.Motor.RIGHT, strength, angle);
+                    //sendJoyStick(angle, strength, CommandParts.MOTOR_RIGHT);
             }
         }, INTERVAL);
     }
 
-    private void sendJoyStick(int angle, int strength, char motor) {
-        String str = "";
-
-        str += motor;
-
-        int deadStrength = strength - deadzone;
-        int speed = deadStrength > 0
-                ? ((strength / deadStrength) * (deadStrength * (MAX_SPEED / 100)))
-                : 0;
-
-        if (speed > 0 && speed < MIN_SPEED)
-            speed = MIN_SPEED;
-
-        if (angle > 0 && angle < 180) {
-            str += speed;
-        } else if (angle > 180 && angle < 360) {
-            str += "-" + speed;
-        }
-
-        str += ';';
-
-        try {
-            btOutput.write(str.getBytes());
-        } catch (IOException e) {
-            Log.e("BLUETOOTH-SOCK", "Error sending data", e);
-        }
+    private void connectRfcommNonBlocking() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                connectRfcomm();
+            }
+        }).start();
     }
 
     private void genDeviceListNonBlocking() {
@@ -203,10 +194,12 @@ public class ControllerActivity extends AppCompatActivity {
     private ArrayAdapter genDeviceList() {
         btDevices = bt.getBondedDevices().toArray(new BluetoothDevice[0]);
 
-        final String[] names = new String[btDevices.length];
+        final String[] names = new String[btDevices.length + 1];
+
+        names[0] = "None";
 
         for (int i = 0; i < btDevices.length; i++) {
-            names[i] = btDevices[i].getName();
+            names[i + 1] = btDevices[i].getName();
         }
 
         ArrayAdapter nameAdapter = new ArrayAdapter<>(this,
@@ -220,16 +213,38 @@ public class ControllerActivity extends AppCompatActivity {
 
     private void connectRfcomm() {
         try {
+            if (btSocket != null)
+                btSocket.close();
+
             btSocket = btDevice.createRfcommSocketToServiceRecord(
                     UUID.fromString("00001101-0000-1000-8000-00805F9B34FB"));
 
             if (!btSocket.isConnected()) {
+                bt.cancelDiscovery();
                 btSocket.connect();
             }
 
-            btOutput = btSocket.getOutputStream();
-        } catch (IOException e) {
-            Log.e("BLUETOOTH", "Could not connect to device", e);
+            OutputStream btOutput = btSocket.getOutputStream();
+
+            btOutput.write(0x02);
+
+            sender.setOuput(btOutput);
+
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(ControllerActivity.this, "Connected", Toast.LENGTH_SHORT).show();
+                }
+            });
+        } catch (Exception e) {
+            Log.d("BLUETOOTH", "Could not connect to device", e);
+
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(ControllerActivity.this, "Failed to connect", Toast.LENGTH_SHORT).show();
+                }
+            });
         }
     }
 

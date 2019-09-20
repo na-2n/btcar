@@ -1,152 +1,144 @@
-/*
- *     Copyright (C) 2019  Yui
- *
- *     This program is free software: you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation, either version 3 of the License, or
- *     (at your option) any later version.
- *
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
- *
- *     You should have received a copy of the GNU General Public License
- *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
-#include <stdint.h>
-#include <stdbool.h>
-
 #include <Arduino.h>
+#include <stdint.h>
+#include <stdlib.h>
 
-#define LEFT_A 3
-#define RIGHT_A 5
+// -------------------------------- //
 
-#define LEFT_B 9
-#define RIGHT_B 11
+#define SERIAL_BAUDRATE 38400
 
-#define BAUDRATE 9600
+#define PIN_A_FW 3
+#define PIN_A_BW 5
 
-#define MIN_SPEED 70
-#define MAX_SPEED 255
+#define PIN_B_FW 9
+#define PIN_B_BW 11
 
-int16_t last_speed_a;
-int16_t last_speed_b;
+#define SPEED_STEP_1 120
+#define SPEED_STEP_2 255
+
+// !!-----------------------------!! //
+
+#define SPEED_MIN 70 // don't change unless you know what you're doing
+
+#define CHECK_SPEED // comment to disable check below
+
+// !!-----------------------------!! //
+
+#define PACKET_SIZE 1
+#define PACKET_START 0x02
+
+#define READY_BYTE 0x45
+#define OK_BYTE 0xC8
+
+typedef struct packet {
+    uint8_t pkt_start;
+
+    uint8_t mot_a_state;
+    uint8_t mot_a_dir;
+    uint8_t mot_a_speed;
+
+    uint8_t mot_b_state;
+    uint8_t mot_b_dir;
+    uint8_t mot_b_speed;
+} packet_t;
+
+void set_motor_speed(uint8_t pin_fw, uint8_t pin_bw, uint8_t negative, uint8_t speed) {
+    if (negative) {
+        uint8_t pin_tmp = pin_fw;
+
+        pin_fw = pin_bw;
+        pin_bw = pin_tmp;
+    }
+
+    if (speed < SPEED_MIN) {
+        speed = 0;
+    }
+
+#ifdef CHECK_SPEED
+    if (analogRead(pin_fw) == speed) {
+        return;
+    }
+#endif
+
+    analogWrite(pin_fw, speed);
+    analogWrite(pin_bw, LOW);
+}
+
+void set_speed_a(uint8_t negative, uint8_t speed) {
+    set_motor_speed(PIN_A_FW, PIN_A_BW, negative, speed);
+}
+
+void set_speed_b(uint8_t negative, uint8_t speed) {
+    set_motor_speed(PIN_B_FW, PIN_B_BW, negative, speed);
+}
+
+void handle_packet(packet_t pkt) {
+    set_speed_a(pkt.mot_a_dir, pkt.mot_a_speed);
+    set_speed_b(pkt.mot_b_dir, pkt.mot_b_speed);
+}
 
 void setup() {
-    Serial.begin(BAUDRATE);
+    Serial.begin(SERIAL_BAUDRATE);
 
-    pinMode(LEFT_A, OUTPUT);
-    pinMode(RIGHT_A, OUTPUT);
+    Serial.write(READY_BYTE);
+
+    pinMode(PIN_A_FW, OUTPUT);
+    pinMode(PIN_A_BW, OUTPUT);
+
+    pinMode(PIN_B_FW, OUTPUT);
+    pinMode(PIN_B_BW, OUTPUT);
 }
 
-enum motors {
-    MOTOR_A,
-    MOTOR_B
-};
+uint8_t get_bit_at(uint8_t byte, uint8_t index) {
+    index &= 7;
 
-enum commands {
-    COMMAND_SPEED_LEFT = 'L',
-    COMMAND_SPEED_RIGHT = 'R',
-};
-
-void handle_input(String str) {
-    char command = str[0];
-
-    String arg = str.substring(1);
-
-    int16_t speed = strtol(arg.c_str(), NULL, 0);
-
-    switch (command) {
-        case COMMAND_SPEED_LEFT: {
-            if (speed == last_speed_b) {
-                return;
-            }
-
-            set_speed(speed, MOTOR_B);
-
-            last_speed_b = speed;
-
-            break;
-        }
-
-        case COMMAND_SPEED_RIGHT: {
-            if (speed == last_speed_a) {
-                return;
-            }
-
-            set_speed(speed, MOTOR_A);
-
-            last_speed_a = speed;
-
-            break;
-        }
-    }
+    return (byte & (0x80 >> index)) >> (7 - index);
 }
 
-void set_speed(int16_t speed, uint8_t motor) {
-    bool backwards = speed < 0;
+uint8_t get_bits_at(uint8_t byte, uint8_t index, uint8_t count) {
+    index &= 7;
+    count &= 7;
 
-    if (backwards) {
-        speed = -speed;
-    }
-
-    if (speed > MAX_SPEED) {
-        speed = MAX_SPEED;
-    } else if (speed > 0 && speed < MIN_SPEED) {
-        speed = MIN_SPEED;
-    }
-
-    if (backwards) {
-        set_speed_backward(speed, motor);
-    } else {
-        set_speed_forward(speed, motor);
-    }
+    return (byte & (0xFF >> index)) >> ((8 - index) - count);
 }
 
-void set_speed_forward(uint8_t speed, uint8_t motor) {
-    switch (motor) {
-        case MOTOR_A: {
-            analogWrite(RIGHT_A, LOW);
-            analogWrite(LEFT_A, speed);
-
-            break;
-        }
-
-        case MOTOR_B: {
-            analogWrite(RIGHT_B, LOW);
-            analogWrite(LEFT_B, speed);
-
-            break;
-        }
-    }
-}
-
-void set_speed_backward(uint8_t speed, uint8_t motor) {
-    switch (motor) {
-        case MOTOR_A: {
-            analogWrite(LEFT_A, LOW);
-            analogWrite(RIGHT_A, speed);
-
-            break;
-        }
-
-        case MOTOR_B: {
-            analogWrite(LEFT_B, LOW);
-            analogWrite(RIGHT_B, speed);
-
-            break;
-        }
-    }
-}
-
+// TODO: fail safe packet reading
 void loop() {
     if (Serial.available()) {
-        String str = Serial.readStringUntil(';');
+        uint8_t data = Serial.read();
 
-        if (str) {
-            handle_input(str);
+        packet_t pkt;
+
+        pkt.pkt_start = get_bits_at(data, 6, 2); // data & (0xFF >> 6);
+
+        Serial.print("start: "); Serial.println(pkt.pkt_start);
+
+        if (pkt.pkt_start != PACKET_START) {
+            return;
         }
+        
+        if (pkt.mot_a_state = get_bit_at(data, 5)) {
+            pkt.mot_a_dir = get_bit_at(data, 4);
+            pkt.mot_a_speed = get_bit_at(data, 3) ? SPEED_STEP_2 : SPEED_STEP_1;
+        } else {
+            pkt.mot_a_dir = 0;
+            pkt.mot_a_speed = 0;
+        }
+        
+        if (pkt.mot_b_state = get_bit_at(data, 2)) {
+            pkt.mot_b_dir = get_bit_at(data, 1);
+            pkt.mot_b_speed = get_bit_at(data, 0) ? SPEED_STEP_2 : SPEED_STEP_1;
+        } else {
+            pkt.mot_b_dir = 0;
+            pkt.mot_b_speed = 0;
+        }
+
+        Serial.print("state a = "); Serial.println(pkt.mot_a_state);
+        Serial.print("speed a = "); Serial.println(pkt.mot_a_speed);
+        Serial.print("state b = "); Serial.println(pkt.mot_b_state);
+        Serial.print("speed b = "); Serial.println(pkt.mot_b_speed);
+
+        handle_packet(pkt);
+
+        Serial.write(OK_BYTE);
     }
 }
